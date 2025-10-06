@@ -1,0 +1,8 @@
+streamlit
+httpx
+beautifulsoup4
+dateparser
+pandas
+lxml
+urllib3
+xlsxwriter
