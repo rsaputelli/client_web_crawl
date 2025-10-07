@@ -505,7 +505,7 @@ def run_batch(clients_cfg: dict, max_pages=250, max_depth=4, use_sitemap=True, r
             body = (
                 f"Automated audit for {name} ({url})\n\n"
                 f"Pages scanned: {total}\nStale pages: {stale_count}\nUndated pages: {undated}\n"
-                f"Avg age (days)": {avg_age}\nThreshold: {stale_days} days\n\n"
+                f"Avg age (days): {avg_age}\nThreshold: {stale_days} days\n\n"
                 f"CSV and Excel reports attached."
             )
             send_email_with_attachments(
