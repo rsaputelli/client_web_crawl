@@ -309,12 +309,12 @@ async def crawl(self) -> List[PageRecord]:
                 try:
                     url, depth, source, lm_hint = await asyncio.wait_for(self.queue.get(), timeout=2.0)
                 except asyncio.TimeoutError:
-                    # Nothing ready right now; if we've hit the cap or queue is empty, exit.
+                    # Nothing ready; if we've hit the cap or the queue is empty, exit.
                     if len(results) >= self.max_pages or self.queue.empty():
                         break
                     continue
 
-                # If we've hit the cap, just mark done and drain remaining queue items.
+                # If we've hit the cap, mark done and keep draining the queue.
                 if len(results) >= self.max_pages:
                     self.queue.task_done()
                     continue
@@ -406,6 +406,7 @@ async def crawl(self) -> List[PageRecord]:
     for w in workers:
         w.cancel()
     return results
+
 
 
 # =====================
