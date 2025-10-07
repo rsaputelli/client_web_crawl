@@ -38,7 +38,7 @@ from bs4 import BeautifulSoup
 import dateparser
 import urllib.robotparser as robotparser
 import yaml
-import random
+
 # =====================
 # Config / Constants
 # =====================
@@ -239,25 +239,38 @@ def parse_sitemap(url: str) -> List[Tuple[str, Optional[datetime]]]:
 # =====================
 
 class Crawler:
-    def __init__(self, base_url: str, max_pages: int = 200, max_depth: int = 4, include_paths: List[str] | None = None, exclude_paths: List[str] | None = None, respect_robots: bool = True, concurrency: int = DEFAULT_CONCURRENCY, polite_delay_ms: int = 250, jitter_ms: int = 200):
+    def __init__(
+        self,
+        base_url: str,
+        max_pages: int = 200,
+        max_depth: int = 4,
+        include_paths: List[str] | None = None,
+        exclude_paths: List[str] | None = None,
+        respect_robots: bool = True,
+        concurrency: int = DEFAULT_CONCURRENCY,
+        polite_delay_ms: int = 250,
+        jitter_ms: int = 200,
+    ):
         self.base = self._normalize_base(base_url)
         self.domain = urlparse(self.base).netloc
         self.host_norm = _norm_host(self.domain)
-        self.max_pages = max_pages
-        self.max_depth = max_depth
+
+        self.max_pages = int(max_pages)
+        self.max_depth = int(max_depth)
         self.include_paths = include_paths or []
         self.exclude_paths = exclude_paths or []
-        self.respect_robots = respect_robots
+        self.respect_robots = bool(respect_robots)
+
         self.concurrency = max(1, int(concurrency))
         self.polite_delay_ms = max(0, int(polite_delay_ms))
         self.jitter_ms = max(0, int(jitter_ms))
 
         self.robots = load_robots(self.base)
-        self.robots_delay_ms = parse_robots_delay_ms(self.base) if respect_robots else 0
+        self.robots_delay_ms = parse_robots_delay_ms(self.base) if self.respect_robots else 0
 
         self.seen: Set[str] = set()
         self.retry_count: Dict[str, int] = {}
-        self.queue: asyncio.Queue[Tuple[str,int,str,Optional[datetime]]] = asyncio.Queue()
+        self.queue: asyncio.Queue[Tuple[str, int, str, Optional[datetime]]] = asyncio.Queue()
         self.sitemap_dates: Dict[str, datetime] = {}
 
     def _normalize_base(self, url: str) -> str:
@@ -298,116 +311,113 @@ class Crawler:
                             self.sitemap_dates[loc] = lm
         await self.queue.put((self.base, 0, "seed", None))
 
-async def crawl(self) -> List[PageRecord]:
-    results: List[PageRecord] = []
-    sem = asyncio.Semaphore(self.concurrency)
-    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
+    async def crawl(self) -> List[PageRecord]:
+        results: List[PageRecord] = []
+        sem = asyncio.Semaphore(self.concurrency)
+        headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
 
-    async def worker():
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=headers, follow_redirects=True) as client:
-            while True:
-                try:
-                    url, depth, source, lm_hint = await asyncio.wait_for(self.queue.get(), timeout=2.0)
-                except asyncio.TimeoutError:
-                    # Nothing ready; if we've hit the cap or the queue is empty, exit.
-                    if len(results) >= self.max_pages or self.queue.empty():
-                        break
-                    continue
-
-                # If we've hit the cap, mark done and keep draining the queue.
-                if len(results) >= self.max_pages:
-                    self.queue.task_done()
-                    continue
-
-                # Skip duplicates early
-                if url in self.seen:
-                    self.queue.task_done()
-                    continue
-
-                # Scope/robots checks
-                if depth > self.max_depth or not self.in_scope(url) or not self.allowed(url):
-                    self.queue.task_done()
-                    continue
-
-                async with sem:
-                    # Polite delay + jitter (respect robots delay if larger)
-                    base_delay = max(self.polite_delay_ms, self.robots_delay_ms)
-                    if base_delay or self.jitter_ms:
-                        j = random.uniform(-self.jitter_ms, self.jitter_ms)
-                        await asyncio.sleep(max(0, (base_delay + j)) / 1000.0)
-
+        async def worker():
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=headers, follow_redirects=True) as client:
+                while True:
                     try:
-                        r = await client.get(url)
-                    except Exception:
-                        results.append(PageRecord(
-                            url, 0, "", None, "", None, lm_hint, source, "fetch_error", 0, 0, depth
-                        ))
+                        url, depth, source, lm_hint = await asyncio.wait_for(self.queue.get(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        if len(results) >= self.max_pages or self.queue.empty():
+                            break
+                        continue
+
+                    # If we've hit the cap, just drain remaining queued items.
+                    if len(results) >= self.max_pages:
                         self.queue.task_done()
                         continue
 
-                    # If the seed redirected (e.g., apex -> www), lock onto final host
-                    if depth == 0 and source == "seed":
+                    # Skip duplicates early
+                    if url in self.seen:
+                        self.queue.task_done()
+                        continue
+
+                    # Scope/robots checks
+                    if depth > self.max_depth or not self.in_scope(url) or not self.allowed(url):
+                        self.queue.task_done()
+                        continue
+
+                    async with sem:
+                        # Polite delay + jitter (respect robots delay if larger)
+                        base_delay = max(self.polite_delay_ms, self.robots_delay_ms)
+                        if base_delay or self.jitter_ms:
+                            j = random.uniform(-self.jitter_ms, self.jitter_ms)
+                            await asyncio.sleep(max(0, (base_delay + j)) / 1000.0)
+
                         try:
-                            canon = _norm_host(urlparse(str(r.url)).netloc)
-                            if canon and canon != self.host_norm:
-                                self.host_norm = canon
+                            r = await client.get(url)
                         except Exception:
-                            pass
+                            results.append(PageRecord(
+                                url, 0, "", None, "", None, lm_hint, source, "fetch_error", 0, 0, depth
+                            ))
+                            self.queue.task_done()
+                            continue
 
-                    # Backoff and retry once on 429/503
-                    if r.status_code in (429, 503) and self.retry_count.get(url, 0) < 1:
-                        self.retry_count[url] = self.retry_count.get(url, 0) + 1
-                        await asyncio.sleep(random.uniform(2.0, 5.0))
-                        await self.queue.put((url, depth, source, lm_hint))
+                        # Lock onto final host if homepage redirects (apex <-> www)
+                        if depth == 0 and source == "seed":
+                            try:
+                                canon = _norm_host(urlparse(str(r.url)).netloc)
+                                if canon and canon != self.host_norm:
+                                    self.host_norm = canon
+                            except Exception:
+                                pass
+
+                        # Backoff and retry once on 429/503
+                        if r.status_code in (429, 503) and self.retry_count.get(url, 0) < 1:
+                            self.retry_count[url] = self.retry_count.get(url, 0) + 1
+                            await asyncio.sleep(random.uniform(2.0, 5.0))
+                            await self.queue.put((url, depth, source, lm_hint))
+                            self.queue.task_done()
+                            continue
+
+                        # Mark as seen after a non-429/503 attempt
+                        self.seen.add(url)
+
+                        # Parse
+                        last_mod = parse_http_date(r.headers.get("Last-Modified")) if r.headers.get("Last-Modified") else None
+                        html = r.text if r.headers.get("Content-Type", "").lower().startswith("text/html") else ""
+                        title, wc, best_date, date_src = "", 0, None, ""
+                        if html:
+                            soup = BeautifulSoup(html, "lxml")
+                            ttag = soup.find("title")
+                            title = (ttag.text.strip() if ttag and ttag.text else "")
+                            best_date, date_src, _ = extract_date_from_html(html, soup)
+                            wc = len(soup.get_text(" ").split())
+
+                        sm_date = self.sitemap_dates.get(url, lm_hint)
+                        candidates = [
+                            (best_date, "content:" + (date_src or "")),
+                            (last_mod, "Last-Modified"),
+                            (sm_date, "sitemap:lastmod"),
+                        ]
+                        dated = [c for c in candidates if c[0]]
+                        chosen_date, chosen_src = (max(dated, key=lambda x: x[0]) if dated else (None, ""))
+
+                        results.append(PageRecord(
+                            url, r.status_code, title, chosen_date, chosen_src,
+                            last_mod, sm_date, source, "", wc, len(r.content), depth
+                        ))
+
+                        # Enqueue links
+                        if html and r.status_code == 200 and depth < self.max_depth:
+                            soup = BeautifulSoup(html, "lxml")
+                            base_for_join = str(r.url) if hasattr(r, "url") else url
+                            for a in soup.find_all("a", href=True):
+                                nxt = urljoin(base_for_join, a.get("href").strip())
+                                if nxt not in self.seen and self.in_scope(nxt) and self.allowed(nxt):
+                                    await self.queue.put((nxt, depth + 1, "crawl", None))
+
                         self.queue.task_done()
-                        continue
 
-                    # Mark as seen after a non-429/503 attempt
-                    self.seen.add(url)
-
-                    # Extract dates/metrics
-                    last_mod = parse_http_date(r.headers.get("Last-Modified")) if r.headers.get("Last-Modified") else None
-                    html = r.text if r.headers.get("Content-Type", "").lower().startswith("text/html") else ""
-                    title, wc, best_date, date_src = "", 0, None, ""
-                    if html:
-                        soup = BeautifulSoup(html, "lxml")
-                        ttag = soup.find("title")
-                        title = (ttag.text.strip() if ttag and ttag.text else "")
-                        best_date, date_src, _ = extract_date_from_html(html, soup)
-                        wc = len(soup.get_text(" ").split())
-
-                    sm_date = self.sitemap_dates.get(url, lm_hint)
-                    candidates = [
-                        (best_date, "content:" + (date_src or "")),
-                        (last_mod, "Last-Modified"),
-                        (sm_date, "sitemap:lastmod"),
-                    ]
-                    dated = [c for c in candidates if c[0]]
-                    chosen_date, chosen_src = (max(dated, key=lambda x: x[0]) if dated else (None, ""))
-
-                    results.append(PageRecord(
-                        url, r.status_code, title, chosen_date, chosen_src,
-                        last_mod, sm_date, source, "", wc, len(r.content), depth
-                    ))
-
-                    # Enqueue links
-                    if html and r.status_code == 200 and depth < self.max_depth:
-                        soup = BeautifulSoup(html, "lxml")
-                        base_for_join = str(r.url) if hasattr(r, "url") else url
-                        for a in soup.find_all("a", href=True):
-                            nxt = urljoin(base_for_join, a.get("href").strip())
-                            if nxt not in self.seen and self.in_scope(nxt) and self.allowed(nxt):
-                                await self.queue.put((nxt, depth + 1, "crawl", None))
-
-                    self.queue.task_done()
-
-    workers = [asyncio.create_task(worker()) for _ in range(self.concurrency)]
-    await self.queue.join()
-    for w in workers:
-        w.cancel()
-    return results
-
-
+        workers = [asyncio.create_task(worker()) for _ in range(self.concurrency)]
+        await self.queue.join()
+        for w in workers:
+            w.cancel()
+        return results
 
 # =====================
 # Email utils (Office365 SMTP)
@@ -704,7 +714,7 @@ clients:
                         body=(
                             f"Automated audit for {name} ({url})\n\n"
                             f"Pages scanned: {total}\nStale pages: {stale_count}\nUndated pages: {undated}\n"
-                            f"Avg age (days): {avg_age}\nThreshold: {stale_days} days\n\n"
+                            f"Avg age (days)": {avg_age}\nThreshold: {stale_days} days\n\n"
                             f"CSV and Excel reports attached."
                         ),
                         attachments=[
