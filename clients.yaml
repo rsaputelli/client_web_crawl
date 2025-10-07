@@ -33,3 +33,10 @@ clients:
     include_paths: ["/"]
     exclude_paths: ["/wp-json", "/feed"]
     staff_emails: []
+
+    - name: ASCIP
+    url: https://www.academyscipro.org/
+    stale_days: 365
+    include_paths: ["/"]
+    exclude_paths: ["/wp-json", "/feed"]
+    staff_emails: []
