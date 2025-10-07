@@ -1,16 +1,26 @@
 """
-Website Staleness Audit — Streamlit App (Drop‑in)
+Website Staleness Audit — Streamlit App (Rebuilt Clean Drop‑in)
 Author: ChatGPT for Ray (Lutine Management)
-Date: 2025-10-06
+Date: 2025-10-07
 
-This drop‑in replaces your current file and adds:
-- Host normalization (treats apex and www as the same; locks onto the final redirected host)
-- Sticky results (filters don’t clear the table)
-- Polite crawling controls: max concurrency, per‑request delay, jitter
-- Backoff on 429/503 with a single retry
-- Quote cleanups for the "Stale?" column
+What’s included in this rebuild
+- Host normalization (apex ↔ www) + lock to final redirected host
+- Sticky results (filters don’t wipe the table)
+- Polite crawling controls (concurrency / delay / jitter) + robots hints
+- 429/503 backoff with a single retry
+- Queue‑drain fix when Max pages < seeded URLs (no more “hangs”)
+- Email bodies converted to safe triple‑quoted strings (fixes SyntaxError)
 
-Tip: ensure `requirements.txt` includes: streamlit, httpx, beautifulsoup4, dateparser, pandas, lxml, urllib3, xlsxwriter, pyyaml
+Requirements (requirements.txt)
+  streamlit
+  httpx
+  beautifulsoup4
+  dateparser
+  pandas
+  lxml
+  urllib3
+  xlsxwriter
+  pyyaml
 """
 from __future__ import annotations
 
@@ -46,7 +56,7 @@ import yaml
 STALENESS_DEFAULT_DAYS = 365
 DEFAULT_CONCURRENCY = 6
 HTTP_TIMEOUT = 20
-USER_AGENT = "Lutine-StalenessAudit/1.3 (+https://lutinemanagement.com)"
+USER_AGENT = "Lutine-StalenessAudit/1.4 (+https://lutinemanagement.com)"
 REPORT_ROOT = Path("reports")
 
 # Normalize host (treat apex and www as same)
@@ -185,14 +195,12 @@ def parse_robots_delay_ms(base: str) -> int:
             for raw in r.text.splitlines():
                 line = raw.strip().lower()
                 if line.startswith("crawl-delay"):
-                    # crawl-delay: seconds
                     try:
                         sec = float(re.split(r"[:\s]+", line, maxsplit=1)[1])
                         delay_ms = max(delay_ms, int(sec * 1000))
                     except Exception:
                         pass
                 elif line.startswith("request-rate"):
-                    # request-rate: N/seconds
                     try:
                         part = re.split(r"[:\s]+", line, maxsplit=1)[1]
                         nums = re.findall(r"(\d+)/(\d+)", part)
@@ -542,12 +550,16 @@ def run_batch(clients_cfg: dict, max_pages=250, max_depth=4, use_sitemap=True, r
         # email
         if staff_emails:
             subject = f"{name}: Website Staleness Audit"
-            body = (
-                f"Automated audit for {name} ({url})\n\n"
-                f"Pages scanned: {total}\nStale pages: {stale_count}\nUndated pages: {undated}\n"
-                f"Avg age (days): {avg_age}\nThreshold: {stale_days} days\n\n"
-                f"CSV and Excel reports attached."
-            )
+            body = f"""Automated audit for {name} ({url})
+
+Pages scanned: {total}
+Stale pages: {stale_count}
+Undated pages: {undated}
+Avg age (days): {avg_age}
+Threshold (days): {stale_days}
+
+CSV and Excel reports attached.
+"""
             send_email_with_attachments(
                 to_addrs=staff_emails,
                 subject=subject,
@@ -591,7 +603,17 @@ if mode == "Single URL (on‑demand)":
         inc = [p.strip() for p in include_paths.split(",") if p.strip()] or None
         exc = [p.strip() for p in exclude_paths.split(",") if p.strip()] or None
 
-        crawler = Crawler(base_url, max_pages=int(max_pages), max_depth=int(max_depth), include_paths=inc, exclude_paths=exc, respect_robots=respect_robots, concurrency=int(max_conc), polite_delay_ms=int(polite_delay_ms), jitter_ms=int(jitter_ms))
+        crawler = Crawler(
+            base_url,
+            max_pages=int(max_pages),
+            max_depth=int(max_depth),
+            include_paths=inc,
+            exclude_paths=exc,
+            respect_robots=respect_robots,
+            concurrency=int(max_conc),
+            polite_delay_ms=int(polite_delay_ms),
+            jitter_ms=int(jitter_ms),
+        )
         with st.status("Crawling…", expanded=True) as status:
             asyncio.run(crawler.bootstrap(use_sitemap=use_sitemap))
             status.update(label=f"Seeded {crawler.queue.qsize()} URLs")
@@ -683,7 +705,17 @@ clients:
             staff_emails = c.get("staff_emails", [])
 
             with st.status(f"Crawling {name}…", expanded=False):
-                crawler = Crawler(url, max_pages=int(max_pages), max_depth=int(max_depth), include_paths=include_paths, exclude_paths=exclude_paths, respect_robots=respect_robots, concurrency=int(max_conc), polite_delay_ms=int(polite_delay_ms), jitter_ms=int(jitter_ms))
+                crawler = Crawler(
+                    url,
+                    max_pages=int(max_pages),
+                    max_depth=int(max_depth),
+                    include_paths=include_paths,
+                    exclude_paths=exclude_paths,
+                    respect_robots=respect_robots,
+                    concurrency=int(max_conc),
+                    polite_delay_ms=int(polite_delay_ms),
+                    jitter_ms=int(jitter_ms),
+                )
                 asyncio.run(crawler.bootstrap(use_sitemap=use_sitemap))
                 records = asyncio.run(crawler.crawl())
                 df = build_dataframe(records, stale_days)
@@ -708,15 +740,20 @@ clients:
 
             if do_email and staff_emails:
                 try:
+                    body = f"""Automated audit for {name} ({url})
+
+Pages scanned: {total}
+Stale pages: {stale_count}
+Undated pages: {undated}
+Avg age (days): {avg_age}
+Threshold (days): {stale_days}
+
+CSV and Excel reports attached.
+"""
                     send_email_with_attachments(
                         to_addrs=staff_emails,
                         subject=f"{name}: Website Staleness Audit",
-                        body=(
-                            f"Automated audit for {name} ({url})\n\n"
-                            f"Pages scanned: {total}\nStale pages: {stale_count}\nUndated pages: {undated}\n"
-                            f"Avg age (days)": {avg_age}\nThreshold: {stale_days} days\n\n"
-                            f"CSV and Excel reports attached."
-                        ),
+                        body=body,
                         attachments=[
                             (f"{base}.csv", csv_bytes, "text/csv"),
                             (f"{base}.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
