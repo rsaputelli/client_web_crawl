@@ -6,3 +6,4 @@ pandas
 lxml
 urllib3
 xlsxwriter
+pyyaml
