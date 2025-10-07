@@ -445,8 +445,8 @@ def run_batch(clients_cfg: dict, max_pages=250, max_depth=4, use_sitemap=True, r
         df = build_dataframe(records, stale_days)
 
         total = len(df)
-        stale_count = int(df[df["Stale?\"] == \"Yes\"].shape[0])
-        undated = int(df[df["Stale?\"] == \"Unknown\"].shape[0])
+        stale_count = int(df[df["Stale?\"] == "Yes"].shape[0])
+        undated = int(df[df["Stale?\"] == "Unknown"].shape[0])
         avg_age = int(df["Age (days)"].dropna().mean()) if not df["Age (days)"].dropna().empty else 0
 
         csv_bytes = df.to_csv(index=False).encode("utf-8")
@@ -522,8 +522,8 @@ if mode == "Single URL (on‑demand)":
 
         df = build_dataframe(records, int(stale_days))
         total = len(df)
-        stale_count = int(df[df["Stale?\"] == \"Yes\"].shape[0])
-        undated = int(df[df["Stale?\"] == \"Unknown\"].shape[0])
+        stale_count = int(df[df["Stale?\"] == "Yes"].shape[0])
+        undated = int(df[df["Stale?\"] == "Unknown"].shape[0])
         avg_age = int(df["Age (days)"].dropna().mean()) if not df["Age (days)"].dropna().empty else 0
 
         c1, c2, c3, c4 = st.columns(4)
@@ -535,9 +535,9 @@ if mode == "Single URL (on‑demand)":
         st.subheader("Results")
         show_only = st.radio("Show", ["All", "Stale", "Unknown", "Fresh"], index=1, horizontal=True)
         view = df.copy()
-        if show_only == "Stale": view = view[view["Stale?\"] == \"Yes\"]
-        elif show_only == "Unknown": view = view[view["Stale?\"] == \"Unknown\"]
-        elif show_only == "Fresh": view = view[view["Stale?\"] == \"No\"]
+        if show_only == "Stale": view = view[view["Stale?"] == "Yes"]
+        elif show_only == "Unknown": view = view[view["Stale?"] == "Unknown"]
+        elif show_only == "Fresh": view = view[view["Stale?"] == "No"]
         st.dataframe(view, use_container_width=True, hide_index=True)
 
         st.subheader("Download report")
@@ -589,8 +589,8 @@ clients:
                 df = build_dataframe(records, stale_days)
 
             total = len(df)
-            stale_count = int(df[df["Stale?\"] == \"Yes\"].shape[0])
-            undated = int(df[df["Stale?\"] == \"Unknown\"].shape[0])
+            stale_count = int(df[df["Stale?\"] == "Yes"].shape[0])
+            undated = int(df[df["Stale?\"] == "Unknown"].shape[0])
             avg_age = int(df["Age (days)"].dropna().mean()) if not df["Age (days)"].dropna().empty else 0
 
             csv_bytes = df.to_csv(index=False).encode("utf-8")
