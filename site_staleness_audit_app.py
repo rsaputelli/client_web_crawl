@@ -3,11 +3,12 @@ Website Staleness Audit — Streamlit App (Drop‑in)
 Author: ChatGPT for Ray (Lutine Management)
 Date: 2025-10-06
 
-This is a drop‑in replacement for your current app with:
+This drop‑in replaces your current file and adds:
 - Host normalization (treats apex and www as the same; locks onto the final redirected host)
-- Sticky results (table/filters don’t disappear when you toggle the radio buttons)
+- Sticky results (filters don’t clear the table)
+- Polite crawling controls: max concurrency, per‑request delay, jitter
+- Backoff on 429/503 with a single retry
 - Quote cleanups for the "Stale?" column
-- Everything else from your current multi‑client build unchanged
 
 Tip: ensure `requirements.txt` includes: streamlit, httpx, beautifulsoup4, dateparser, pandas, lxml, urllib3, xlsxwriter, pyyaml
 """
@@ -19,6 +20,7 @@ import io
 import os
 import re
 import time
+import random
 import smtplib
 import ssl
 from dataclasses import dataclass
@@ -42,9 +44,9 @@ import yaml
 # =====================
 
 STALENESS_DEFAULT_DAYS = 365
-CONCURRENCY = 8
+DEFAULT_CONCURRENCY = 6
 HTTP_TIMEOUT = 20
-USER_AGENT = "Lutine-StalenessAudit/1.2 (+https://lutinemanagement.com)"
+USER_AGENT = "Lutine-StalenessAudit/1.3 (+https://lutinemanagement.com)"
 REPORT_ROOT = Path("reports")
 
 # Normalize host (treat apex and www as same)
@@ -172,6 +174,40 @@ def find_sitemaps(base: str) -> List[str]:
     return out
 
 
+def parse_robots_delay_ms(base: str) -> int:
+    """Parse Crawl-delay or Request-rate from robots.txt if present (best‑effort)."""
+    try:
+        with httpx.Client(timeout=HTTP_TIMEOUT, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
+            r = client.get(urljoin(base, "/robots.txt"))
+            if r.status_code != 200:
+                return 0
+            delay_ms = 0
+            for raw in r.text.splitlines():
+                line = raw.strip().lower()
+                if line.startswith("crawl-delay"):
+                    # crawl-delay: seconds
+                    try:
+                        sec = float(re.split(r"[:\s]+", line, maxsplit=1)[1])
+                        delay_ms = max(delay_ms, int(sec * 1000))
+                    except Exception:
+                        pass
+                elif line.startswith("request-rate"):
+                    # request-rate: N/seconds
+                    try:
+                        part = re.split(r"[:\s]+", line, maxsplit=1)[1]
+                        nums = re.findall(r"(\d+)/(\d+)", part)
+                        if nums:
+                            n, s = map(int, nums[0])
+                            if n > 0:
+                                per_req_ms = int((s / n) * 1000)
+                                delay_ms = max(delay_ms, per_req_ms)
+                    except Exception:
+                        pass
+            return delay_ms
+    except Exception:
+        return 0
+
+
 def parse_sitemap(url: str) -> List[Tuple[str, Optional[datetime]]]:
     pages: List[Tuple[str, Optional[datetime]]] = []
     try:
@@ -203,7 +239,7 @@ def parse_sitemap(url: str) -> List[Tuple[str, Optional[datetime]]]:
 # =====================
 
 class Crawler:
-    def __init__(self, base_url: str, max_pages: int = 200, max_depth: int = 4, include_paths: List[str] | None = None, exclude_paths: List[str] | None = None, respect_robots: bool = True):
+    def __init__(self, base_url: str, max_pages: int = 200, max_depth: int = 4, include_paths: List[str] | None = None, exclude_paths: List[str] | None = None, respect_robots: bool = True, concurrency: int = DEFAULT_CONCURRENCY, polite_delay_ms: int = 250, jitter_ms: int = 200):
         self.base = self._normalize_base(base_url)
         self.domain = urlparse(self.base).netloc
         self.host_norm = _norm_host(self.domain)
@@ -212,8 +248,15 @@ class Crawler:
         self.include_paths = include_paths or []
         self.exclude_paths = exclude_paths or []
         self.respect_robots = respect_robots
+        self.concurrency = max(1, int(concurrency))
+        self.polite_delay_ms = max(0, int(polite_delay_ms))
+        self.jitter_ms = max(0, int(jitter_ms))
+
         self.robots = load_robots(self.base)
+        self.robots_delay_ms = parse_robots_delay_ms(self.base) if respect_robots else 0
+
         self.seen: Set[str] = set()
+        self.retry_count: Dict[str, int] = {}
         self.queue: asyncio.Queue[Tuple[str,int,str,Optional[datetime]]] = asyncio.Queue()
         self.sitemap_dates: Dict[str, datetime] = {}
 
@@ -257,7 +300,7 @@ class Crawler:
 
     async def crawl(self) -> List[PageRecord]:
         results: List[PageRecord] = []
-        sem = asyncio.Semaphore(CONCURRENCY)
+        sem = asyncio.Semaphore(self.concurrency)
         headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
 
         async def worker():
@@ -267,12 +310,17 @@ class Crawler:
                         url, depth, source, lm_hint = await asyncio.wait_for(self.queue.get(), timeout=2.0)
                     except asyncio.TimeoutError:
                         break
-                    if url in self.seen:
-                        self.queue.task_done(); continue
-                    self.seen.add(url)
+
                     if depth > self.max_depth or not self.in_scope(url) or not self.allowed(url):
                         self.queue.task_done(); continue
+
                     async with sem:
+                        # Polite delay + jitter (respect robots delay if larger)
+                        base_delay = max(self.polite_delay_ms, self.robots_delay_ms)
+                        if base_delay or self.jitter_ms:
+                            j = random.uniform(-self.jitter_ms, self.jitter_ms)
+                            await asyncio.sleep(max(0, (base_delay + j)) / 1000.0)
+
                         try:
                             r = await client.get(url)
                         except Exception:
@@ -287,6 +335,19 @@ class Crawler:
                                     self.host_norm = canon
                             except Exception:
                                 pass
+
+                        # Backoff and retry once on 429/503
+                        if r.status_code in (429, 503) and self.retry_count.get(url, 0) < 1:
+                            self.retry_count[url] = self.retry_count.get(url, 0) + 1
+                            await asyncio.sleep(random.uniform(2.0, 5.0))
+                            # allow retry by removing from seen if present
+                            if url in self.seen:
+                                self.seen.remove(url)
+                            await self.queue.put((url, depth, source, lm_hint))
+                            self.queue.task_done();
+                            continue
+
+                        self.seen.add(url)
 
                         last_mod = parse_http_date(r.headers.get("Last-Modified")) if r.headers.get("Last-Modified") else None
                         html = r.text if r.headers.get("Content-Type","").lower().startswith("text/html") else ""
@@ -313,7 +374,7 @@ class Crawler:
                                     await self.queue.put((nxt, depth + 1, "crawl", None))
                         self.queue.task_done()
 
-        workers = [asyncio.create_task(worker()) for _ in range(min(CONCURRENCY, self.max_pages))]
+        workers = [asyncio.create_task(worker()) for _ in range(self.concurrency)]
         await self.queue.join()
         for w in workers: w.cancel()
         return results
@@ -444,7 +505,7 @@ def run_batch(clients_cfg: dict, max_pages=250, max_depth=4, use_sitemap=True, r
             body = (
                 f"Automated audit for {name} ({url})\n\n"
                 f"Pages scanned: {total}\nStale pages: {stale_count}\nUndated pages: {undated}\n"
-                f"Avg age (days): {avg_age}\nThreshold: {stale_days} days\n\n"
+                f"Avg age (days)": {avg_age}\nThreshold: {stale_days} days\n\n"
                 f"CSV and Excel reports attached."
             )
             send_email_with_attachments(
@@ -471,6 +532,9 @@ with st.sidebar:
     st.header("Crawl Settings")
     max_pages = st.number_input("Max pages", 10, 5000, 300, step=10)
     max_depth = st.slider("Max depth", 1, 10, 6)
+    max_conc = st.slider("Max concurrency", 1, 16, DEFAULT_CONCURRENCY)
+    polite_delay_ms = st.slider("Polite delay (ms)", 0, 2000, 250)
+    jitter_ms = st.slider("Jitter (± ms)", 0, 1000, 200)
     use_sitemap = st.checkbox("Use sitemap for bootstrap", True)
     respect_robots = st.checkbox("Respect robots.txt", True)
 
@@ -487,7 +551,7 @@ if mode == "Single URL (on‑demand)":
         inc = [p.strip() for p in include_paths.split(",") if p.strip()] or None
         exc = [p.strip() for p in exclude_paths.split(",") if p.strip()] or None
 
-        crawler = Crawler(base_url, max_pages=int(max_pages), max_depth=int(max_depth), include_paths=inc, exclude_paths=exc, respect_robots=respect_robots)
+        crawler = Crawler(base_url, max_pages=int(max_pages), max_depth=int(max_depth), include_paths=inc, exclude_paths=exc, respect_robots=respect_robots, concurrency=int(max_conc), polite_delay_ms=int(polite_delay_ms), jitter_ms=int(jitter_ms))
         with st.status("Crawling…", expanded=True) as status:
             asyncio.run(crawler.bootstrap(use_sitemap=use_sitemap))
             status.update(label=f"Seeded {crawler.queue.qsize()} URLs")
@@ -544,7 +608,7 @@ if mode == "Single URL (on‑demand)" and "last_df" in st.session_state:
 elif mode == "Single URL (on‑demand)":
     st.info("Run an audit to see results.")
 
-# ===== Batch UI (unchanged, but benefits from host normalization under the hood) =====
+# ===== Batch UI (inherits polite crawling under the hood) =====
 if mode == "Batch (clients.yaml)":
     st.write("Upload or paste your **clients.yaml**. You can also store it in the repo and run the monthly batch via cron/GitHub Actions.")
     up = st.file_uploader("clients.yaml", type=["yaml", "yml"])
@@ -579,7 +643,7 @@ clients:
             staff_emails = c.get("staff_emails", [])
 
             with st.status(f"Crawling {name}…", expanded=False):
-                crawler = Crawler(url, max_pages=int(max_pages), max_depth=int(max_depth), include_paths=include_paths, exclude_paths=exclude_paths, respect_robots=respect_robots)
+                crawler = Crawler(url, max_pages=int(max_pages), max_depth=int(max_depth), include_paths=include_paths, exclude_paths=exclude_paths, respect_robots=respect_robots, concurrency=int(max_conc), polite_delay_ms=int(polite_delay_ms), jitter_ms=int(jitter_ms))
                 asyncio.run(crawler.bootstrap(use_sitemap=use_sitemap))
                 records = asyncio.run(crawler.crawl())
                 df = build_dataframe(records, stale_days)
@@ -610,7 +674,7 @@ clients:
                         body=(
                             f"Automated audit for {name} ({url})\n\n"
                             f"Pages scanned: {total}\nStale pages: {stale_count}\nUndated pages: {undated}\n"
-                            f"Avg age (days): {avg_age}\nThreshold: {stale_days} days\n\n"
+                            f"Avg age (days)": {avg_age}\nThreshold: {stale_days} days\n\n"
                             f"CSV and Excel reports attached."
                         ),
                         attachments=[
