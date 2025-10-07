@@ -674,7 +674,7 @@ clients:
                         body=(
                             f"Automated audit for {name} ({url})\n\n"
                             f"Pages scanned: {total}\nStale pages: {stale_count}\nUndated pages: {undated}\n"
-                            f"Avg age (days)": {avg_age}\nThreshold: {stale_days} days\n\n"
+                            f"Avg age (days): {avg_age}\nThreshold: {stale_days} days\n\n"
                             f"CSV and Excel reports attached."
                         ),
                         attachments=[
