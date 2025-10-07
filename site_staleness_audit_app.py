@@ -303,7 +303,7 @@ class Crawler:
         sem = asyncio.Semaphore(self.concurrency)
         headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
 
-        async def worker():
+              async def worker():
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=headers, follow_redirects=True) as client:
                 while len(results) < self.max_pages:
                     try:
