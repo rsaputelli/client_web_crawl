@@ -1,0 +1,35 @@
+clients:
+  - name: SCAAP
+    url: https://www.scaap.org/
+    stale_days: 365
+    include_paths: ["/"]
+    exclude_paths: ["/wp-json", "/feed"]
+    staff_emails: []   # add recipients or leave empty while testing
+
+  - name: CT-AAP
+    url: https://ct-aap.org/
+    stale_days: 365
+    include_paths: ["/"]
+    exclude_paths: ["/wp-json", "/feed"]
+    staff_emails: []
+
+  - name: SEMPA
+    url: https://sempa.org/
+    stale_days: 365
+    include_paths: ["/"]
+    exclude_paths: ["/wp-json", "/feed"]
+    staff_emails: []
+
+  - name: NHCMA
+    url: https://nhcma.org/
+    stale_days: 365
+    include_paths: ["/"]
+    exclude_paths: ["/wp-json", "/feed"]
+    staff_emails: []
+
+  - name: WOEMA
+    url: https://www.woema.org/
+    stale_days: 365
+    include_paths: ["/"]
+    exclude_paths: ["/wp-json", "/feed"]
+    staff_emails: []
